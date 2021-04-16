@@ -121,5 +121,8 @@ mod tests
         tree.insert("a.b.c", 17);
         assert!(tree.remove_all("a.b.c"));
         assert!(tree.find("a.b.c").is_none());
+        assert!(tree.remove_all("a"));
+        assert!(tree.remove_all("a.b") == false);
+        assert!(tree.remove_all("xyz") == false);
     }
 }

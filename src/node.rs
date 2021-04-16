@@ -41,8 +41,7 @@ impl<V: Default + Clone + Eq + Hash> Node<V> {
 
     // 移除所有的value，如果当前有值，则返回true。如果本身没有值，则返回false
     pub fn remove_all(&mut self) -> bool {
-        if self.value_set.is_empty()
-        {
+        if self.value_set.is_empty() {
             false
         } else {
             self.value_set.clear();
