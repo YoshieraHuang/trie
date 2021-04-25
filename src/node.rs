@@ -3,16 +3,16 @@ use std::collections::HashMap;
 use std::collections::hash_set::Iter;
 use std::hash::Hash;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Node<V> {
     // 子结点
-    pub children: HashMap<&'static str, Box<Node<V>>>,
+    children: HashMap<&'static str, Box<Node<V>>>,
     // 订阅了单层wildcard对应的node
-    pub onode: Option<Box<Node<V>>>,
+    onode: Option<Box<Node<V>>>,
     // 订阅了多层wildcard对应的组
-    pub m_value_set: HashSet<V>,
+    m_value_set: HashSet<V>,
     // 当前结点对应的值
-    pub value_set: HashSet<V>,
+    value_set: HashSet<V>,
 }
 
 impl<V: Default + Clone + Eq + Hash> Node<V> {

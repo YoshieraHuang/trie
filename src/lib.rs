@@ -4,6 +4,7 @@ mod error;
 use node::Node;
 use std::hash::Hash;
 use error::{Result, Error};
+use std::fmt::Display;
 // use std::iter::Iterator;
 
 #[derive(Default)]
@@ -18,7 +19,7 @@ pub struct Trie<V> {
     mwc: &'static str,
 }
 
-impl<V: Default + Clone + Eq + Hash> Trie<V> {
+impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
     // 初始化
     pub fn new(sc: char, owc: &'static str, mwc: &'static str) -> Trie<V> {
         Trie {
@@ -31,10 +32,6 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
 
     // 从给出的key中得到各级token，如果key为空，则会返回error
     fn tokens_from_key(key: &'static str, sc: char) -> Result<impl Iterator<Item=&'static str>> {
-        if key.len() == 0 {
-            return Err(Error::EmptyToken(key.to_owned()))
-        }
-
         Ok(key.split(sc))
     }
 
@@ -60,6 +57,8 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
             // 待处理的nodes
             .try_fold(vec![self.root.as_ref(), ],
                 |nodes, token| {
+                    println!("{}", token);
+
                     Self::check_token(token, key, hasmwc)?;
                     
                     // 如果是空node，那就不用查找了
@@ -79,25 +78,34 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
                         let mut next_nodes: Vec<&Node<V>> = Vec::new();
                         for node in nodes.into_iter() {
                             // 先把订阅单层的那些放进去
-                            if let Some(ref o_node) = node.onode {
+                            if let Some(o_node) = node.owc_node() {
                                 // 只用给引用
                                 next_nodes.push(o_node);
                             }
                             // 把所有子节点的引用都放进去
-                            for child_node in node.children.values() {
-                                next_nodes.push(child_node);
-                            }
+                            next_nodes.extend(node.child_nodes());
                         }
                         Ok(next_nodes)
                     // 如果是多层的
                     } else if token == mwc {
                         hasmwc = true;
-                        Ok(nodes)
+                        let mut next_nodes: Vec<&Node<V>> = Vec::new();
+                        for node in nodes.into_iter() {
+                            // 把当前node的mwc中的值都放到values中
+                            values.extend(node.mwc_values());
+                            // 把所有子节点
+                            if let Some(o_node) = node.owc_node() {
+                                next_nodes.push(o_node);
+                            }
+                            next_nodes.extend(node.child_nodes())
+                        }
+                        // 把当前nodes中
+                        Ok(next_nodes)
                     } else {
                         // 普通token，直接去children里面取就好了
                         let mut next_nodes: Vec<&Node<V>> = Vec::new();
                         for node in nodes.into_iter() {
-                            if let Some(n) = node.children.get(token) {
+                            if let Some(n) = node.get_child_node(token) {
                                 next_nodes.push(n);
                             }
                         }
@@ -112,7 +120,7 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
             // 如果有hasmwc，则要放入mwc值并迭代子节点
             if hasmwc {
                 values.extend(node.mwc_values());
-                if let Some(ref onode) = node.onode {
+                if let Some(onode) = node.owc_node() {
                     nodes.push(onode);
                 }
 
@@ -122,7 +130,6 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
             }
             i += 1;
         }
-
         // 如果有多层wildcard，需要把所有的values都
         Ok(values.into_iter())
     }
@@ -212,7 +219,7 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
             let mut next_nodes: Vec<&Node<V>> = Vec::new();
             if token == owc {
                 for node in nodes.into_iter() {
-                    if let Some(ref onode) = node.onode {
+                    if let Some(onode) = node.owc_node() {
                         next_nodes.push(onode);
                     }
                     for child_node in node.child_nodes() {
@@ -221,7 +228,7 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
                 }
             } else {
                 for node in nodes.into_iter() {
-                    if let Some(n) = node.children.get(token) {
+                    if let Some(n) = node.get_child_node(token) {
                         next_nodes.push(n);
                     }
                 }
@@ -243,7 +250,7 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
                     }
 
                     // 如果有hasmwc，则要迭代子节点
-                    if let Some(ref onode) = node.onode {
+                    if let Some(onode) = node.owc_node() {
                         nodes.push(onode);
                     }
     
@@ -307,11 +314,8 @@ impl<V: Default + Clone + Eq + Hash> Trie<V> {
         Ok((node, hasmwc))
     }
 
-    fn check_token(token: &'static str, key: &'static str, hasmwc: bool) -> Result<()> {
-        // token长度为0，返回错误
-        if token.len() == 0 {
-            Err(Error::EmptyToken(key.to_owned()))
-        } else if hasmwc {
+    fn check_token(_token: &'static str, key: &'static str, hasmwc: bool) -> Result<()> {
+        if hasmwc {
         // 过了mwc还出现了token，返回错误
             Err(Error::TokenAfterMwc(key.to_owned()))
         } else {
@@ -370,44 +374,39 @@ mod tests
     #[test]
     fn illegal_subject() {
         let mut trie = Trie::new('.', "*", ">");
-        assert_eq!(trie.insert("", 0).err(), Some(Error::EmptyToken("".to_owned())));
-        assert_eq!(trie.find("").err(), Some(Error::EmptyToken("".to_owned())));
-        assert_eq!(trie.find("a..").err(), Some(Error::EmptyToken("a..".to_owned())));
-        assert_eq!(trie.find("...").err(), Some(Error::EmptyToken("...".to_owned())));
+        assert_eq!(trie.insert(">.b", 0).err(), Some(Error::TokenAfterMwc(">.b".to_owned())));
         assert!(is_empty(trie.find(">").unwrap()));
-        assert_eq!(trie.find(">.").err(), Some(Error::EmptyToken(">.".to_owned())));
         assert_eq!(trie.find(">.a").err(), Some(Error::TokenAfterMwc(">.a".to_owned())));
     }
 
     #[test]
     fn wc_trie() {
         let mut trie = Trie::new('.', "*", ">");
-        assert!(is_empty(trie.find("a").unwrap()));
-        assert!(is_empty(trie.find("b").unwrap()));
-        assert!(is_empty(trie.find("a.b").unwrap()));
-        assert!(is_empty(trie.find("*").unwrap()));
-        assert!(is_empty(trie.find("*.b").unwrap()));
-        assert!(is_empty(trie.find(">").unwrap()));
-        assert!(trie.insert("a", 8).is_ok());
-        assert!(is_empty(trie.find("a.b").unwrap()));
-        assert!(is_empty(trie.find("b").unwrap()));
-        assert!(vec_eq(trie.find("a").unwrap(), vec![&8]));
-        assert!(vec_eq(trie.find("*").unwrap(), vec![&8]));
-        assert!(vec_eq(trie.find(">").unwrap(), vec![&8]));
-        assert!(is_empty(trie.find("*.b").unwrap()));
-        assert!(trie.insert("a.b", 9).is_ok());
-        assert!(vec_eq(trie.find("a").unwrap(), vec![&8]));
-        assert!(vec_eq(trie.find("*").unwrap(), vec![&8]));
-        assert!(vec_eq(trie.find("a.b").unwrap(), vec![&9]));
-        assert!(vec_eq(trie.find("*.b").unwrap(), vec![&9]));
-        assert!(vec_eq(trie.find("a.*").unwrap(), vec![&9]));
-        assert!(vec_eq(trie.find(">").unwrap(), vec![&8, &9]));
-        assert!(trie.insert("a.c", 1).is_ok());
-        assert!(vec_eq(trie.find("a").unwrap(), vec![&8]));
-        assert!(vec_eq(trie.find("*").unwrap(), vec![&8]));
-        assert!(vec_eq(trie.find("a.b").unwrap(), vec![&9]));
-        assert!(vec_eq(trie.find("*.b").unwrap(), vec![&9]));
-        assert!(vec_eq(trie.find("a.*").unwrap(), vec![&9, &1]));
-        assert!(vec_eq(trie.find(">").unwrap(), vec![&8, &9, &1]));
+        assert!(trie.insert("a", 0).is_ok());
+        assert!(trie.insert("a.b", 1).is_ok());
+        assert!(trie.insert("a.c", 2).is_ok());
+        assert!(trie.insert("a.b.c", 3).is_ok());
+        assert!(trie.insert("a.c.c", 4).is_ok());
+        assert!(trie.insert("b.c.c", 5).is_ok());
+        assert!(trie.insert("c.c", 6).is_ok());
+        assert!(trie.insert("c", 7).is_ok());
+        assert!(trie.insert("b.c", 8).is_ok());
+        assert!(trie.insert("c.a", 9).is_ok());
+        assert!(trie.insert("a.c", 10).is_ok());
+        assert!(trie.insert("c.b", 11).is_ok());
+        assert!(vec_eq(trie.find("*").unwrap(), vec![&0, &7]));
+        assert!(vec_eq(trie.find("*.b").unwrap(), vec![&1, &11]));
+        assert!(vec_eq(trie.find("*.c").unwrap(), vec![&2, &6, &8, &10]));
+        assert!(vec_eq(trie.find("a.*").unwrap(), vec![&1, &2, &10]));
+        assert!(vec_eq(trie.find("c.*").unwrap(), vec![&6, &9, &11]));
+        assert!(vec_eq(trie.find("*.*").unwrap(), vec![&1, &2, &6, &8, &9, &10, &11]));
+        assert!(vec_eq(trie.find("a.*.*").unwrap(), vec![&3, &4]));
+        assert!(vec_eq(trie.find("a.*.c").unwrap(), vec![&3, &4]));
+        assert!(vec_eq(trie.find("*.b.*").unwrap(), vec![&3]));
+        assert!(vec_eq(trie.find("*.*.c").unwrap(), vec![&3, &4, &5]));
+        assert!(vec_eq(trie.find(">").unwrap(), vec![&0, &1, &2, &3, &4, &5, &6, &7, &8, &9, &10, &11]));
+        assert!(vec_eq(trie.find("a.>").unwrap(), vec![&1, &2, &3, &4, &10]));
+        assert!(vec_eq(trie.find("b.>").unwrap(), vec![&5, &8]));
+        assert!(vec_eq(trie.find("c.>").unwrap(), vec![&6, &9, &11]));
     }
 }
