@@ -1,326 +1,203 @@
 mod node;
-mod error;
+pub mod token;
 
+pub use token::Token;
 use node::Node;
 use std::hash::Hash;
-use error::{Result, Error};
 use std::fmt::Display;
-// use std::iter::Iterator;
 
 #[derive(Default)]
 pub struct Trie<V> {
     // 根结点
     root: Box<Node<V>>,
-    // 分割key的各个token的字符
-    sc: char,
-    // 替代一个token的wildcard字符串
-    owc: &'static str,
-    // 替代多个token的wildcard字符串
-    mwc: &'static str,
 }
 
 impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
-    // 初始化
-    pub fn new(sc: char, owc: &'static str, mwc: &'static str) -> Trie<V> {
+    /// 初始化
+    pub fn new() -> Trie<V> {
         Trie {
             root: Default::default(),
-            sc: sc,
-            owc: owc,
-            mwc: mwc,
         }
     }
 
-    // 从给出的key中得到各级token，如果key为空，则会返回error
-    fn tokens_from_key(key: &'static str, sc: char) -> Result<impl Iterator<Item=&'static str>> {
-        Ok(key.split(sc))
-    }
-
-
-    // 添加键值对
-    pub fn insert(&mut self, key: &'static str, value: V) -> Result<()> {
-        let (node, hasmwc) = self.must_find_mut_node(key)?;
+    /// 添加键值对
+    pub fn insert(&mut self, tokens: Vec<Token>, value: V) {
+        let (node, is_mwc) = self.must_find_node_mut(tokens);
         // 找到之后就把value给放进去，如果存在mwc则放在mwc里面去
-        if hasmwc { node.mwc_add(value); } else { node.add(value); }
-        Ok(())
+        if is_mwc {
+            node.mwc_add(value);
+        } else {
+            node.add(value);
+        }
     }
 
-    // 返回键对应的所有值的迭代器，如果不存在键，则返回空迭代器
-    pub fn find(&self, key: &'static str) -> Result<impl Iterator<Item=&V>> {
-        let sc = self.sc;
-        let owc = self.owc;
-        let mwc = self.mwc;
-        let mut hasmwc = false;
+    /// 返回能与keys匹配的所有值的迭代器，如果不存在键，返回空迭代器
+    pub fn find(&self, keys: Vec<&'static str>) -> impl Iterator<Item=&V> {
         // 保存结果
         let mut values: Vec<&V> = Vec::new();
         // 迭代key来获得最终node
-        let mut nodes = Self::tokens_from_key(key, sc)?
+        let nodes = keys.into_iter()
             // 待处理的nodes
             .try_fold(vec![self.root.as_ref(), ],
                 |nodes, token| {
-                    println!("{}", token);
-
-                    Self::check_token(token, key, hasmwc)?;
-                    
                     // 如果是空node，那就不用查找了
                     if nodes.len() == 0 {
-                        return Ok(nodes);
+                        return Err(());
                     }
                     
-                    // 把当前的nodes中的所有的多层wildcard的组给放到values中
-                    for node in nodes.iter() {
-                        for m_value in node.mwc_values() {
-                            values.push(m_value);
+                    let mut next_nodes: Vec<&Node<V>> = Vec::new();
+                    for node in nodes.into_iter() {
+                        // 多层wildcard必然满足tokens的需求，所以直接添加到values中
+                        values.extend(node.mwc_values());
+                        // 符合当前token的node可以是token对应的，也可以是owc对应的
+                        next_nodes.extend(node.owc_node());
+                        if let Some(n) = node.get_child_node(token) {
+                            next_nodes.push(n);
                         }
                     }
-                    
-                    if token == owc {
-                        // 如果是单层，就要把当前node的所有children都带进去
-                        let mut next_nodes: Vec<&Node<V>> = Vec::new();
-                        for node in nodes.into_iter() {
-                            // 先把订阅单层的那些放进去
-                            if let Some(o_node) = node.owc_node() {
-                                // 只用给引用
-                                next_nodes.push(o_node);
-                            }
-                            // 把所有子节点的引用都放进去
-                            next_nodes.extend(node.child_nodes());
-                        }
-                        Ok(next_nodes)
-                    // 如果是多层的
-                    } else if token == mwc {
-                        hasmwc = true;
-                        let mut next_nodes: Vec<&Node<V>> = Vec::new();
-                        for node in nodes.into_iter() {
-                            // 把当前node的mwc中的值都放到values中
-                            values.extend(node.mwc_values());
-                            // 把所有子节点
-                            if let Some(o_node) = node.owc_node() {
-                                next_nodes.push(o_node);
-                            }
-                            next_nodes.extend(node.child_nodes())
-                        }
-                        // 把当前nodes中
-                        Ok(next_nodes)
-                    } else {
-                        // 普通token，直接去children里面取就好了
-                        let mut next_nodes: Vec<&Node<V>> = Vec::new();
-                        for node in nodes.into_iter() {
-                            if let Some(n) = node.get_child_node(token) {
-                                next_nodes.push(n);
-                            }
-                        }
-                        Ok(next_nodes)
-                    }
-                })?;
-        let mut i = 0;
-        while nodes.len() > i {
-            let node = nodes[i];
-            // 把当前node的所有value都放到values中去
-            values.extend(node.values());
-            // 如果有hasmwc，则要放入mwc值并迭代子节点
-            if hasmwc {
-                values.extend(node.mwc_values());
-                if let Some(onode) = node.owc_node() {
-                    nodes.push(onode);
-                }
+                    Ok(next_nodes)
+                }).unwrap_or(vec![]);
+        // 先迭代mwc中的结果
+        values.into_iter()
+            // 再迭代nodes中的结果
+            .chain(nodes.into_iter().flat_map(|n| n.values()))
+    }
 
-                for child_node in node.child_nodes() {
-                    nodes.push(child_node);
+    /// 移除tokens对应的组中的value值。如果存在tokens组并且其中有value值，返回true。
+    /// 如果不存在tokens组或者tokens组中没有value值，返回false
+    pub fn remove(&mut self, tokens: Vec<Token>, value: &V) -> bool {
+        match self.find_node_mut(tokens) {
+            None => false,
+            Some((node, hasmwc)) => 
+                if hasmwc {
+                    node.mwc_remove(value)
+                } else {
+                    node.remove(value)
                 }
-            }
-            i += 1;
         }
-        // 如果有多层wildcard，需要把所有的values都
-        Ok(values.into_iter())
     }
 
-    // 移除key对应的组中的value值。如果存在key组并且其中有value值，返回true。
-    // 如果不存在key组或者keys组中没有value值，返回false
-    pub fn remove(&mut self, key: &'static str, value: &V) -> Result<bool> {
-        let (node, hasmwc) = self.find_mut_node(key)?;
-
-        Ok(node.map(|n|
+    /// 移除key对应的组中的所有value。如果存在keys则返回true，如果不存在则返回false
+    pub fn remove_all(&mut self, tokens: Vec<Token>) -> bool {
+        match self.find_node_mut(tokens) {
+            None => false,
+            Some((node, hasmwc)) => 
                 if hasmwc {
-                    n.mwc_remove(value)
+                    node.mwc_remove_all()
                 } else {
-                    n.remove(value)
+                    node.remove_all()
                 }
-            )
-            .unwrap_or(false)
-        )
+        }
     }
 
-    // 移除key对应的组中的所有value。如果存在keys则返回true，如果不存在则返回false
-    pub fn remove_all(&mut self, key: &'static str) -> Result<bool> {
-        let (node, hasmwc) = self.find_mut_node(key)?;
-    
-        Ok(node.map(|n|
-                if hasmwc {
-                    n.mwc_remove_all()
-                } else {
-                    n.remove_all()
-                }
-            )
-            .unwrap_or(false)
-        )
-    }
-
-    // 找到key对应的node，返回其引用，如果没有，则返回None
-    fn find_node(&self, key: &'static str) -> Result<(Option<&Node<V>>, bool)> {
-        let sc = self.sc;
-        let mwc = self.mwc;
-        let owc = self.owc;
+    /// 找到key对应的node，返回其引用，如果没有，则返回None
+    #[allow(dead_code)]
+    fn find_node(&self, tokens: Vec<Token>) -> (Option<&Node<V>>, bool) {
         let mut hasmwc = false;
-        // 将key分成token
-        let node = Self::tokens_from_key(key, sc)?
+        let value = tokens.into_iter()
             // 查找token对应的node，如果没有token就返回None
-            .try_fold(Some(& *self.root),
+            .fold(Some(& *self.root),
                 |node, token| {
-                    Self::check_token(token, key, hasmwc)?;
-                    Ok(node.and_then(|n| {
+                    node.and_then(|n| {
                         match token {
-                            // 是mwc，直接返回当前的node
-                            _ if token == mwc => { hasmwc = true; Some(n) },
-                            // 是owc，则返回owc面对的owc
-                            _ if token == owc => { n.owc_node() },
-                            // 找到token对应的子结点，如果没有则返回None
-                            _ => { n.get_child_node(token) }
+                            Token::MultiWildcard => {
+                                hasmwc = true;
+                                Some(n)
+                            },
+                            Token::OneWildcard => {
+                                n.owc_node()
+                            },
+                            Token::Normal(s) => {
+                                n.get_child_node(s)
+                            }
                         }
-                    }))
-                })?;
-        Ok((node, hasmwc))
+                    })
+                });
+        (value, hasmwc)
     }
 
-    // 是否有对应的key存在
-    pub fn exist(&self, key: &'static str) -> Result<bool> {
-        let sc = self.sc;
-        let owc = self.owc;
-        let mwc = self.mwc;
-        let mut hasmwc = false;
-        let mut nodes = vec![self.root.as_ref(), ];
-        for token in Self::tokens_from_key(key, sc)? {
-            Self::check_token(token, key, hasmwc)?;
-            // 没有node，就不会存在key
-            if nodes.len() == 0 {
-                return Ok(false);
-            }
-            
-            // 多层wildcard中有值，返回true
-            if nodes.iter().any(|n| !n.is_mwc_empty_values()) {
-                return Ok(true)
-            }
-            
-            // 如果有多层wildcard，就要要在
-            if token == mwc {
-                hasmwc = true;
-                continue;
-            }
-
-            let mut next_nodes: Vec<&Node<V>> = Vec::new();
-            if token == owc {
-                for node in nodes.into_iter() {
-                    if let Some(onode) = node.owc_node() {
-                        next_nodes.push(onode);
+    // 是否有与keys匹配的值存在，包含带有wildcard的
+    pub fn exist(&self, keys: Vec<&'static str>) -> bool {
+        // 迭代key来获得最终node
+        // 其中try_fold里面的Result没有错误的含义，只是用来使用Err来短路迭代
+        // Err包含的
+        let nodes = keys.into_iter()
+            // 待处理的nodes
+            .try_fold(vec![self.root.as_ref(), ],
+                |nodes, token| {
+                    // 如果是空node，那就不用查找了
+                    if nodes.len() == 0 {
+                        return Err(false);
                     }
-                    for child_node in node.child_nodes() {
-                        next_nodes.push(child_node);
+                    let mut next_nodes: Vec<&Node<V>> = Vec::new();
+                    for node in nodes.into_iter() {
+                        // 多层wildcard必然满足tokens的需求，所以直接添加到values中
+                        if !node.is_mwc_empty() { return Err(true); }
+                        // 符合当前token的node可以是token对应的，也可以是owc对应的
+                        next_nodes.extend(node.owc_node());
+                        if let Some(n) = node.get_child_node(token) {
+                            next_nodes.push(n);
+                        }
                     }
+                    Ok(next_nodes)
                 }
-            } else {
-                for node in nodes.into_iter() {
-                    if let Some(n) = node.get_child_node(token) {
-                        next_nodes.push(n);
-                    }
+            );
+        match nodes {
+            // 短路，直接输出内部包含值
+            Err(v) => { return v; },
+            // 没有短路，查找匹配的nodes中是否有值
+            Ok(ns) => {
+                for n in ns.into_iter() {
+                    if !n.is_empty() { return true; }
                 }
-            }
-            nodes = next_nodes;
-        }
-
-        // nodes中任意一个node含有value就认为是存在的
-        if nodes.iter().any(|n| !n.is_empty_values()) {
-            Ok(true)
-        } else {
-            if hasmwc {
-                let mut i = 0;
-                while nodes.len() > i {
-                    let node = nodes[i];
-                    // 如果有values，认为存在
-                    if !node.is_empty_values() || !node.is_mwc_empty_values() {
-                        return Ok(true)
-                    }
-
-                    // 如果有hasmwc，则要迭代子节点
-                    if let Some(onode) = node.owc_node() {
-                        nodes.push(onode);
-                    }
-    
-                    for child_node in node.child_nodes() {
-                        nodes.push(child_node);
-                    }
-                    i += 1;
-                }
-                Ok(false)
-            } else {
-                Ok(false)
+                return false;
             }
         }
     }
 
-    // 找到key对应的node，返回其引用。如果没有对应node存在，则创建
-    fn must_find_mut_node(&mut self, key: &'static str) -> Result<(&mut Node<V>, bool)> {
-        let sc = self.sc;
-        let owc = self.owc;
-        let mwc = self.mwc;
+    // 找到key对应的node，返回其可变引用。如果没有对应node存在，则创建
+    fn must_find_node_mut(&mut self, tokens: Vec<Token>) -> (&mut Node<V>, bool) {
         // 是否遇到过了mwc
         let mut hasmwc = false;
         // 找到对应的node
-        let node = Self::tokens_from_key(key, sc)?
+        let node = tokens.into_iter()
+            .fold(&mut *self.root,
+                |node, token| {
+                    match token {
+                        Token::MultiWildcard => {
+                            hasmwc = true;
+                            node
+                        },
+                        Token::OneWildcard => node.owc_node_mut(),
+                        Token::Normal(s) => node.get_child_node_mut_or_insert(s)
+                    }
+            }
+        );
+        (node, hasmwc)
+    }
+
+    // 找到key对应的node，返回其可变引用。如果没有，则返回None
+    fn find_node_mut(&mut self, tokens: Vec<Token>) -> Option<(&mut Node<V>, bool)> {
+        let mut hasmwc = false;
+        tokens.into_iter()
+            // 查找token对应的node，如果没有token就返回None
             .try_fold(&mut *self.root,
                 |node, token| {
-                    Self::check_token(token, key, hasmwc)?;
-                    Ok(match token {
-                        _ if token == mwc => { hasmwc = true; node },
-                        _ if token == owc => node.mut_owc_node(),
-                        _ => node.get_or_insert(token)
-                    })
-            }
-        )?;
-        Ok((node, hasmwc))
-    }
-
-    // 找到key对应的node，返回其可变引用
-    fn find_mut_node(&mut self, key: &'static str) -> Result<(Option<&mut Node<V>>, bool)> {
-        let sc = self.sc;
-        let mwc = self.mwc;
-        let owc = self.owc;
-        let mut hasmwc = false;
-        // 将key分成token
-        let node = Self::tokens_from_key(key, sc)?
-            // 查找token对应的node，如果没有token就返回None
-            .try_fold(Some(&mut *self.root),
-                |node, token| {
-                    Self::check_token(token, key, hasmwc)?;
-                    Ok(node.and_then(|n| {
-                        match token {
-                            // 是mwc，直接返回当前的node
-                            _ if token == mwc => { hasmwc = true; Some(n) },
-                            // 是owc，则返回owc面对的owc
-                            _ if token == owc => { Some(n.mut_owc_node()) },
-                            // 找到token对应的子结点，如果没有则返回None
-                            _ => { n.get_mut_child_node(token) }
+                    match token {
+                        Token::MultiWildcard => {
+                            hasmwc = true;
+                            Some(node)
+                        },
+                        Token::OneWildcard => {
+                            Some(node.owc_node_mut())
+                        },
+                        Token::Normal(s) => {
+                            node.get_child_node_mut(s)
                         }
-                    }))
-                })?;
-        Ok((node, hasmwc))
-    }
-
-    fn check_token(_token: &'static str, key: &'static str, hasmwc: bool) -> Result<()> {
-        if hasmwc {
-        // 过了mwc还出现了token，返回错误
-            Err(Error::TokenAfterMwc(key.to_owned()))
-        } else {
-            Ok(())
-        }
+                    }
+                }
+            )
+            .map(|node| (node, hasmwc))
     }
 }
 
@@ -328,6 +205,7 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
 mod tests
 {
     use super::*;
+    use crate::token::*;
     use std::collections::HashSet;
 
     // 两个迭代器中的元素在忽略顺序的情况下是否一一相等
@@ -342,71 +220,59 @@ mod tests
     }
 
     #[test]
-    fn basic_trie() {
-        let mut trie = Trie::new('.', "*", ">");
-        assert!(trie.insert("a", 10).is_ok());
-        assert!(trie.insert("a", 10).is_ok());
-        assert!(trie.insert("a.b", 5).is_ok());
-        assert!(trie.insert("a", 8).is_ok());
-        assert!(trie.insert("a.b.c", 12).is_ok());
-        assert!(vec_eq(trie.find("a").unwrap(), vec![&10, &8]));
-        assert!(vec_eq(trie.find("a.b").unwrap(), vec![&5,]));
-        assert!(vec_eq(trie.find("a.b.c").unwrap(), vec![&12,]));
-        assert!(is_empty(trie.find("b").unwrap()));
-        assert!(is_empty(trie.find("c").unwrap()));
-        assert!(trie.remove("a", &10).unwrap());
-        assert!(trie.remove("b", &1).unwrap() == false);
-        assert!(trie.remove("a.b", &5).unwrap());
-        assert!(trie.remove("a", &5).unwrap() == false);
-        assert!(vec_eq(trie.find("a").unwrap(), vec![&8, ]));
-        assert!(is_empty(trie.find("a.b").unwrap()));
-        assert!(trie.remove("a", &5).unwrap() == false);
-        assert!(vec_eq(trie.find("a.b.c").unwrap(), vec![&12, ]));
-        assert!(trie.insert("a.b.c", 15).is_ok());
-        assert!(trie.insert("a.b.c", 17).is_ok());
-        assert!(trie.remove_all("a.b.c").unwrap());
-        assert!(is_empty(trie.find("a.b.c").unwrap()));
-        assert!(trie.remove_all("a").unwrap());
-        assert!(trie.remove_all("a.b").unwrap() == false);
-        assert!(trie.remove_all("xyz").unwrap() == false);
+    fn test_basic_trie() -> Result<(), CommonTokenError> {
+        let mut trie = Trie::new();
+        let parser = CommonTokenParser::new('.', "*", ">");
+        trie.insert(parser.parse_tokens("a")?, 1);
+        trie.insert(parser.parse_tokens("a")?, 2);
+        trie.insert(parser.parse_tokens("")?, 3);
+        trie.insert(parser.parse_tokens("a.b")?, 5);
+        trie.insert(parser.parse_tokens(".")?, 6);
+        trie.insert(parser.parse_tokens("a")?, 8);
+        trie.insert(parser.parse_tokens("a.b.c")?, 12);
+        assert!(vec_eq(trie.find(vec!["a"]), vec![&1, &2, &8]));
+        assert!(vec_eq(trie.find(vec![""]), vec![&3, ]));
+        assert!(vec_eq(trie.find(vec!["a", "b"]), vec![&5, ]));
+        assert!(vec_eq(trie.find(vec!["", ""]), vec![&6, ]));
+        assert!(vec_eq(trie.find(vec!["a", "b", "c"]), vec![&12,]));
+        assert!(is_empty(trie.find(vec!["b"])));
+        assert!(is_empty(trie.find(vec!["c"])));
+        assert_eq!(trie.remove(parser.parse_tokens("a")?, &1), true);
+        assert_eq!(trie.remove(parser.parse_tokens("a")?, &1), false);
+        assert_eq!(trie.remove(parser.parse_tokens("a.b")?, &5), true);
+        assert_eq!(trie.remove(parser.parse_tokens("a")?, &5), false);
+        assert!(vec_eq(trie.find(vec!["a"]), vec![&2, &8, ]));
+        assert!(is_empty(trie.find(vec!["a", "b"])));
+        assert!(vec_eq(trie.find(vec!["a", "b", "c"]), vec![&12, ]));
+        assert_eq!(trie.remove(parser.parse_tokens("a.b")?, &5), false);
+        trie.insert(parser.parse_tokens("a.b.c")?, 15);
+        trie.insert(parser.parse_tokens("a.b.c")?, 17);
+        assert_eq!(trie.remove_all(parser.parse_tokens("a.b.c")?), true);
+        assert!(is_empty(trie.find(vec!["a", "b", "c"])));
+        assert_eq!(trie.remove_all(parser.parse_tokens("a")?), true);
+        assert_eq!(trie.remove_all(parser.parse_tokens("a.b")?), false);
+        assert_eq!(trie.remove_all(parser.parse_tokens("x.y.z")?), false);
+        Ok(())
     }
 
     #[test]
-    fn illegal_subject() {
-        let mut trie = Trie::new('.', "*", ">");
-        assert_eq!(trie.insert(">.b", 0).err(), Some(Error::TokenAfterMwc(">.b".to_owned())));
-        assert!(is_empty(trie.find(">").unwrap()));
-        assert_eq!(trie.find(">.a").err(), Some(Error::TokenAfterMwc(">.a".to_owned())));
-    }
+    fn test_trie_with_wildcard() -> Result<(), CommonTokenError> {
+        let mut trie = Trie::new();
+        let parser = CommonTokenParser::new('.', "*", ">");
+        trie.insert(parser.parse_tokens("a")?, 1);
+        trie.insert(parser.parse_tokens("a.b")?, 2);
+        trie.insert(parser.parse_tokens("")?, 3);
+        trie.insert(parser.parse_tokens("*")?, 4);
+        trie.insert(parser.parse_tokens(">")?, 5);
+        trie.insert(parser.parse_tokens("*.c")?, 6);
+        trie.insert(parser.parse_tokens("a.*.c")?, 7);
+        trie.insert(parser.parse_tokens("a.>")?, 8);
 
-    #[test]
-    fn wc_trie() {
-        let mut trie = Trie::new('.', "*", ">");
-        assert!(trie.insert("a", 0).is_ok());
-        assert!(trie.insert("a.b", 1).is_ok());
-        assert!(trie.insert("a.c", 2).is_ok());
-        assert!(trie.insert("a.b.c", 3).is_ok());
-        assert!(trie.insert("a.c.c", 4).is_ok());
-        assert!(trie.insert("b.c.c", 5).is_ok());
-        assert!(trie.insert("c.c", 6).is_ok());
-        assert!(trie.insert("c", 7).is_ok());
-        assert!(trie.insert("b.c", 8).is_ok());
-        assert!(trie.insert("c.a", 9).is_ok());
-        assert!(trie.insert("a.c", 10).is_ok());
-        assert!(trie.insert("c.b", 11).is_ok());
-        assert!(vec_eq(trie.find("*").unwrap(), vec![&0, &7]));
-        assert!(vec_eq(trie.find("*.b").unwrap(), vec![&1, &11]));
-        assert!(vec_eq(trie.find("*.c").unwrap(), vec![&2, &6, &8, &10]));
-        assert!(vec_eq(trie.find("a.*").unwrap(), vec![&1, &2, &10]));
-        assert!(vec_eq(trie.find("c.*").unwrap(), vec![&6, &9, &11]));
-        assert!(vec_eq(trie.find("*.*").unwrap(), vec![&1, &2, &6, &8, &9, &10, &11]));
-        assert!(vec_eq(trie.find("a.*.*").unwrap(), vec![&3, &4]));
-        assert!(vec_eq(trie.find("a.*.c").unwrap(), vec![&3, &4]));
-        assert!(vec_eq(trie.find("*.b.*").unwrap(), vec![&3]));
-        assert!(vec_eq(trie.find("*.*.c").unwrap(), vec![&3, &4, &5]));
-        assert!(vec_eq(trie.find(">").unwrap(), vec![&0, &1, &2, &3, &4, &5, &6, &7, &8, &9, &10, &11]));
-        assert!(vec_eq(trie.find("a.>").unwrap(), vec![&1, &2, &3, &4, &10]));
-        assert!(vec_eq(trie.find("b.>").unwrap(), vec![&5, &8]));
-        assert!(vec_eq(trie.find("c.>").unwrap(), vec![&6, &9, &11]));
+        assert!(vec_eq(trie.find(vec!["a"]), vec![&1, &4, &5]));
+        assert!(vec_eq(trie.find(vec!["b"]), vec![&4, &5]));
+        assert!(vec_eq(trie.find(vec!["a", "b"]), vec![&2, &5, &8]));
+        assert!(vec_eq(trie.find(vec!["a", "c"]), vec![&5, &6, &8]));
+        assert!(vec_eq(trie.find(vec!["a", "b", "c"]), vec![&5, &7, &8]));
+        Ok(())
     }
 }
