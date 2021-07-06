@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Token is the smallest unit of inserting subject
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Token<'a> {
     /// normal one represented by str
     Normal(&'a str),
@@ -13,7 +13,7 @@ pub enum Token<'a> {
 }
 
 /// A Wrapper for a vector of Tokens
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq, Hash)]
 pub struct Tokens<'a>(pub(crate) Vec<Token<'a>>);
 
 impl<'a> From<Vec<Token<'a>>> for Tokens<'a> {
@@ -38,7 +38,8 @@ impl<'a> Tokens<'a> {
     }
 
     /// Whether tokens is consistent with keys
-    pub fn match_keys(&self, keys: Vec<&'a str>) -> bool {
+    pub fn match_keys(&self, keys: impl AsRef<[&'a str]>) -> bool {
+        let keys = keys.as_ref();
         // If `tokens` is longer than `keys`, these two is inconsistent
         if self.0.len() > keys.len() { return false; }
         // If `tokens` is shorter than `keys`, these two may be consistent only

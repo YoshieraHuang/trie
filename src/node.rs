@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::collections::HashMap;
-use std::collections::hash_set::Iter;
+use std::collections::hash_set::{Iter, IntoIter};
 use std::hash::Hash;
 
 /// trie树结点
@@ -16,7 +16,10 @@ pub struct Node<'a, V> {
     value_set: HashSet<V>,
 }
 
-impl<'a, V: Eq + Hash> Node<'a, V> {
+impl<'a, V> Node<'a, V>
+where
+    V: Eq + Hash + Clone
+{
     /// 生成一个新节点
     pub(crate) fn new() -> Self {
         return Node{
@@ -32,9 +35,15 @@ impl<'a, V: Eq + Hash> Node<'a, V> {
         self.value_set.insert(value)
     }
 
-    /// 返回当前的values
-    pub(crate) fn values(&self) -> Iter<'_, V>{
+    /// 返回当前的values的引用
+    #[allow(dead_code)]
+    fn values(&self) -> Iter<'_, V>{
         self.value_set.iter()
+    }
+
+    /// 返回当前values的复制
+    pub(crate) fn values_owned(&self) -> IntoIter<V> {
+        self.value_set.to_owned().into_iter()
     }
 
     /// 移除一个value
@@ -91,8 +100,14 @@ impl<'a, V: Eq + Hash> Node<'a, V> {
     }
 
     /// 返回多层wildcard组中所有的值的引用
-    pub(crate) fn mwc_values(&self) -> Iter<'_, V> {
+    #[allow(dead_code)]
+    fn mwc_values(&self) -> Iter<'_, V> {
         self.m_value_set.iter()
+    }
+
+    /// 返回多层wildcard组中所有值的复制
+    pub(crate) fn mwc_values_owned(&self) -> IntoIter<V> {
+        self.m_value_set.to_owned().into_iter()
     }
 
     /// 多层wildcard组是否是空的

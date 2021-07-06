@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 thiserror = "^1.0.0"
+lru_map = "0.1.0"
