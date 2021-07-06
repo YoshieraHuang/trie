@@ -5,18 +5,18 @@ use std::hash::Hash;
 
 /// trie树结点
 #[derive(Default, Debug)]
-pub struct Node<V> {
+pub struct Node<'a, V> {
     // 子结点
-    children: HashMap<&'static str, Box<Node<V>>>,
+    children: HashMap<&'a str, Box<Node<'a, V>>>,
     // 订阅了单层wildcard对应的node
-    o_node: Option<Box<Node<V>>>,
+    o_node: Option<Box<Node<'a, V>>>,
     // 订阅了多层wildcard对应的组
     m_value_set: HashSet<V>,
     // 当前结点对应的值
     value_set: HashSet<V>,
 }
 
-impl<V:Eq + Hash> Node<V> {
+impl<'a, V: Eq + Hash> Node<'a, V> {
     /// 生成一个新节点
     pub(crate) fn new() -> Self {
         return Node{
@@ -65,7 +65,7 @@ impl<V:Eq + Hash> Node<V> {
 
     /// 所有子节点的可变引用
     #[allow(dead_code)]
-    fn child_nodes_mut(&mut self) -> impl Iterator<Item=&mut Node<V>> {
+    fn child_nodes_mut(&mut self) -> impl Iterator<Item=&mut Node<'a, V>> {
         self.children.values_mut().map(|n| n.as_mut())
     }
     
@@ -75,7 +75,7 @@ impl<V:Eq + Hash> Node<V> {
     }
 
     /// 返回单层wildcard对应的node的可变引用，如果已经有node，则返回，如果没有对应node，则创建并返回
-    pub(crate) fn owc_node_mut(&mut self) -> &mut Node<V> {
+    pub(crate) fn owc_node_mut(&mut self) -> &mut Node<'a, V> {
         // 如果是None则插入新的值，并返回对应的引用
         self.o_node.get_or_insert(Box::new(Node::new()))
     }
@@ -111,17 +111,17 @@ impl<V:Eq + Hash> Node<V> {
     }
 
     /// 获得一个token对应的子节点。如果不存在，则创建
-    pub(crate) fn get_child_node_mut_or_insert(&mut self, token: &'static str) -> &mut Node<V> {
+    pub(crate) fn get_child_node_mut_or_insert(&mut self, token: &'a str) -> &mut Node<'a, V> {
         self.children.entry(token).or_insert(Box::new(Node::new()))
     }
 
     /// 返回token对应的子节点的可变引用
-    pub(crate) fn get_child_node_mut(&mut self, token: &'static str) -> Option<&mut Node<V>> {
+    pub(crate) fn get_child_node_mut(&mut self, token: &'a str) -> Option<&mut Node<'a, V>> {
         self.children.get_mut(token).map(|n| (*n).as_mut())
     }
 
     /// 返回token对应的子节点的不可变引用
-    pub(crate) fn get_child_node(&self, token: &'static str) -> Option<&Node<V>> {
+    pub(crate) fn get_child_node(&self, token: &'a str) -> Option<&Node<'a, V>> {
         self.children.get(token).map(|n| (*n).as_ref())
     }
 }

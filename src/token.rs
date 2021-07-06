@@ -2,9 +2,9 @@ use thiserror::Error;
 
 /// Token is the smallest unit of inserting subject
 #[derive(Debug, PartialEq, Eq)]
-pub enum Token {
+pub enum Token<'a> {
     /// normal one represented by str
-    Normal(&'static str),
+    Normal(&'a str),
     /// wildcard which will always match a single token
     OneWildcard,
     /// wildcard which will always match one or more tokens
@@ -12,26 +12,78 @@ pub enum Token {
     MultiWildcard
 }
 
+/// A Wrapper for a vector of Tokens
+#[derive(Debug, PartialEq)]
+pub struct Tokens<'a>(pub(crate) Vec<Token<'a>>);
+
+impl<'a> From<Vec<Token<'a>>> for Tokens<'a> {
+    fn from(v: Vec<Token<'a>>) -> Tokens<'a> {
+        Tokens(v)
+    }
+}
+
+impl<'a> Tokens<'a> {
+    /// Whether it contains wildcards 
+    pub fn has_no_wildcard(&self) -> bool {
+        self.0.iter()
+            .try_for_each(|t| {
+                match t {
+                    // Some(()) means true here
+                    Token::Normal(_) => Some(()),
+                    // None means false here and will short-circurt
+                    _ => None
+                }
+            })
+        .is_some()
+    }
+
+    /// Whether tokens is consistent with keys
+    pub fn match_keys(&self, keys: Vec<&'a str>) -> bool {
+        // If `tokens` is longer than `keys`, these two is inconsistent
+        if self.0.len() > keys.len() { return false; }
+        // If `tokens` is shorter than `keys`, these two may be consistent only
+        // when last token is multi wildcard, otherwise these two is inconsistent
+        if self.0.len() < keys.len() {
+            match self.0.last() {
+                Some(Token::MultiWildcard) => { },
+                _ => { return false; }
+            }
+        }
+        // compare the two sequences one by one
+        self.0.iter().zip(keys.iter())
+            .try_for_each(|(t, k)| {
+                match t {
+                    // Some(()) means true here
+                    Token::Normal(s) if s == k => Some(()),
+                    Token::OneWildcard | Token::MultiWildcard => Some(()),
+                    // None means false here and will short-circurt
+                    _ => None 
+                }
+            }).is_some()
+    }
+}
+
 /// Can parse bytes to token vector
 pub trait TokenParser {
     type Error;
-    // Parses str to token sequence
-    fn parse_tokens(&self, source: &'static str) -> Result<Vec<Token>, Self::Error>;
+
+    /// Parses str to token sequence
+    fn parse_tokens<'a>(&self, source: &'a str) -> Result<Tokens<'a>, Self::Error>;
 }
 
 /// Common configurations to parse something to tokens
-pub struct CommonTokenParser {
+pub struct CommonTokenParser<'b> {
     /// char to seperate tokens
     seperate_char: char,
     /// chars to represent one-token wildcard
-    one_wildcard_chars: &'static str,
+    one_wildcard_chars: &'b str,
     /// chars to represent multi-token wildcard
-    multi_wildcard_chars: &'static str,
+    multi_wildcard_chars: &'b str,
 }
 
-impl CommonTokenParser {
+impl<'b> CommonTokenParser<'b> {
     /// Returns a CommonTokenParser instance
-    pub fn new(sc: char, owc: &'static str, mwc: &'static str) -> Self {
+    pub fn new(sc: char, owc: &'b str, mwc: &'b str) -> Self {
         Self {
             seperate_char: sc,
             one_wildcard_chars: owc,
@@ -46,11 +98,11 @@ pub enum CommonTokenError {
     MultiWildcardNotAtEnd,
 }
 
-impl TokenParser for CommonTokenParser {
+impl<'b> TokenParser for CommonTokenParser<'b> {
     type Error = CommonTokenError;
     
-    fn parse_tokens(&self, source: &'static str) -> Result<Vec<Token>, Self::Error> {
-        let tokens = source
+    fn parse_tokens<'a>(&self, source: &'a str) -> Result<Tokens<'a>, Self::Error> {
+        Ok(source
             .split(self.seperate_char)
             .try_fold((vec![], false), |(mut vec, has_mwc), s|
                 if has_mwc {
@@ -66,9 +118,7 @@ impl TokenParser for CommonTokenParser {
                     vec.push(Token::Normal(s));
                     Ok((vec, false))
                 }
-            )?.0;
-        
-        return Ok(tokens)
+            )?.0.into())
     }
 }
 
@@ -76,47 +126,82 @@ impl TokenParser for CommonTokenParser {
 mod test {
     use super::*;
 
-    macro_rules! assert_vec_eq {
-        ($a: expr, $b: expr) => {
-            assert_eq!(&$a[..], &$b[..])
+    // macro to generate token conveniently
+    macro_rules! token {
+        (o) => {
+            Token::OneWildcard
         };
+        (m) => {
+            Token::MultiWildcard
+        };
+        ($a:literal) => {
+            Token::Normal($a)
+        }
     }
 
     #[test]
     fn test_common_token_parser() -> Result<(), CommonTokenError> {
         let parser = CommonTokenParser::new('.', "*", ">");
-        assert_vec_eq!(
+        assert_eq!(
             parser.parse_tokens("a.b")?,
-            vec![Token::Normal("a"), Token::Normal("b")]);
-        assert_vec_eq!(
+            Tokens(vec![token!("a"), token!("b")]));
+        assert_eq!(
             parser.parse_tokens("a.b.c")?,
-            vec![Token::Normal("a"), Token::Normal("b"), Token::Normal("c")]
+            Tokens(vec![token!("a"), token!("b"), token!("c")])
         );
-        assert_vec_eq!(
+        assert_eq!(
             parser.parse_tokens("a.*.c")?,
-            vec![Token::Normal("a"), Token::OneWildcard, Token::Normal("c")]
+            Tokens(vec![token!("a"), token!(o), token!("c")])
         );
-        assert_vec_eq!(
+        assert_eq!(
             parser.parse_tokens("a.b.*")?,
-            vec![Token::Normal("a"), Token::Normal("b"), Token::OneWildcard]
+            Tokens(vec![token!("a"), token!("b"), token!(o)])
         );
-        assert_vec_eq!(parser.parse_tokens("*")?, vec![Token::OneWildcard]);
-        assert_vec_eq!(parser.parse_tokens("")?, vec![Token::Normal("")]);
-        assert_vec_eq!(parser.parse_tokens("..")?,
-            vec![Token::Normal(""), Token::Normal(""), Token::Normal("")]);
-        assert_vec_eq!(
+        assert_eq!(parser.parse_tokens("*")?, Tokens(vec![token!(o)]));
+        assert_eq!(parser.parse_tokens("")?, Tokens(vec![token!("")]));
+        assert_eq!(parser.parse_tokens("..")?,
+            Tokens(vec![token!(""), token!(""), token!("")]));
+        assert_eq!(
             parser.parse_tokens("a.b.>")?,
-            vec![Token::Normal("a"), Token::Normal("b"), Token::MultiWildcard]
+            Tokens(vec![token!("a"), token!("b"), token!(m)])
         );
-        assert_vec_eq!(
+        assert_eq!(
             parser.parse_tokens("a.>")?,
-            vec![Token::Normal("a"), Token::MultiWildcard]
+            Tokens(vec![token!("a"), token!(m)])
         );
-        assert_vec_eq!(
+        assert_eq!(
             parser.parse_tokens(">")?,
-            vec![Token::MultiWildcard]
+            Tokens(vec![token!(m)])
         );
         assert_eq!(parser.parse_tokens(">.a").unwrap_err(), CommonTokenError::MultiWildcardNotAtEnd);
         Ok(())
+    }
+
+    #[test]
+    fn test_matcher() {
+        assert_eq!(Tokens(vec![token!("a"), token!("b"), token!("c")]).has_no_wildcard(), true);
+        assert_eq!(Tokens(vec![token!("a"), token!(o), token!("c")]).has_no_wildcard(), false);
+        assert_eq!(Tokens(vec![token!("a"), token!(o), token!(o)]).has_no_wildcard(), false);        
+        assert_eq!(Tokens(vec![token!("a"), token!(o), token!(m)]).has_no_wildcard(), false);
+        let tokens = Tokens(vec![token!("a"), token!("b"), token!("c")]);
+        assert_eq!(tokens.match_keys(vec!["a", "b", "c"]), true);
+        assert_eq!(tokens.match_keys(vec!["a", "b"]), false);
+        assert_eq!(tokens.match_keys(vec!["b", "a", "c"]), false);
+        assert_eq!(tokens.match_keys(vec!["a", "b", "c", "d"]), false);
+        let tokens = Tokens(vec![token!("a"), token!(o)]);
+        assert_eq!(tokens.match_keys(vec!["a", "b"]), true);
+        assert_eq!(tokens.match_keys(vec!["a", "c"]), true);
+        assert_eq!(tokens.match_keys(vec!["b", "c"]), false);
+        assert_eq!(tokens.match_keys(vec!["a", "b", "c"]), false);
+        let tokens = Tokens(vec![token!("a"), token!(m)]);
+        assert_eq!(tokens.match_keys(vec!["a", "b"]), true);
+        assert_eq!(tokens.match_keys(vec!["a", "c"]), true);
+        assert_eq!(tokens.match_keys(vec!["b", "c"]), false);
+        assert_eq!(tokens.match_keys(vec!["a", "b", "c"]), true);
+        let tokens = Tokens(vec![token!("a"), token!(o), token!(m)]);
+        assert_eq!(tokens.match_keys(vec!["a", "b"]), false);
+        assert_eq!(tokens.match_keys(vec!["a", "c"]), false);
+        assert_eq!(tokens.match_keys(vec!["b", "c"]), false);
+        assert_eq!(tokens.match_keys(vec!["a", "b", "c"]), true);
     }
 }

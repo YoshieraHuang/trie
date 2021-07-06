@@ -1,27 +1,26 @@
 mod node;
 pub mod token;
 
-pub use token::Token;
+pub use token::{Token, Tokens};
 use node::Node;
 use std::hash::Hash;
-use std::fmt::Display;
 
 #[derive(Default)]
-pub struct Trie<V> {
+pub struct Trie<'a, V> {
     // 根结点
-    root: Box<Node<V>>,
+    root: Box<Node<'a, V>>,
 }
 
-impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
+impl<'a, V: Eq + Hash> Trie<'a, V> {
     /// 初始化
-    pub fn new() -> Trie<V> {
+    pub fn new() -> Trie<'a, V> {
         Trie {
-            root: Default::default(),
+            root: Box::new(Node::new()),
         }
     }
 
     /// 添加键值对
-    pub fn insert(&mut self, tokens: Vec<Token>, value: V) {
+    pub fn insert(&mut self, tokens: Tokens<'a>, value: V) {
         let (node, is_mwc) = self.must_find_node_mut(tokens);
         // 找到之后就把value给放进去，如果存在mwc则放在mwc里面去
         if is_mwc {
@@ -32,7 +31,7 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
     }
 
     /// 返回能与keys匹配的所有值的迭代器，如果不存在键，返回空迭代器
-    pub fn find(&self, keys: Vec<&'static str>) -> impl Iterator<Item=&V> {
+    pub fn find(&self, keys: Vec<&'a str>) -> impl Iterator<Item=&V> {
         // 保存结果
         let mut values: Vec<&V> = Vec::new();
         // 迭代key来获得最终node
@@ -65,7 +64,7 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
 
     /// 移除tokens对应的组中的value值。如果存在tokens组并且其中有value值，返回true。
     /// 如果不存在tokens组或者tokens组中没有value值，返回false
-    pub fn remove(&mut self, tokens: Vec<Token>, value: &V) -> bool {
+    pub fn remove(&mut self, tokens: Tokens<'a>, value: &V) -> bool {
         match self.find_node_mut(tokens) {
             None => false,
             Some((node, hasmwc)) => 
@@ -78,7 +77,7 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
     }
 
     /// 移除key对应的组中的所有value。如果存在keys则返回true，如果不存在则返回false
-    pub fn remove_all(&mut self, tokens: Vec<Token>) -> bool {
+    pub fn remove_all(&mut self, tokens: Tokens<'a>) -> bool {
         match self.find_node_mut(tokens) {
             None => false,
             Some((node, hasmwc)) => 
@@ -92,7 +91,7 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
 
     /// 找到key对应的node，返回其引用，如果没有，则返回None
     #[allow(dead_code)]
-    fn find_node(&self, tokens: Vec<Token>) -> (Option<&Node<V>>, bool) {
+    fn find_node(&self, tokens: Vec<Token<'a>>) -> (Option<&Node<V>>, bool) {
         let mut hasmwc = false;
         let value = tokens.into_iter()
             // 查找token对应的node，如果没有token就返回None
@@ -117,10 +116,9 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
     }
 
     // 是否有与keys匹配的值存在，包含带有wildcard的
-    pub fn exist(&self, keys: Vec<&'static str>) -> bool {
+    pub fn exist(&self, keys: Vec<&'a str>) -> bool {
         // 迭代key来获得最终node
         // 其中try_fold里面的Result没有错误的含义，只是用来使用Err来短路迭代
-        // Err包含的
         let nodes = keys.into_iter()
             // 待处理的nodes
             .try_fold(vec![self.root.as_ref(), ],
@@ -131,7 +129,7 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
                     }
                     let mut next_nodes: Vec<&Node<V>> = Vec::new();
                     for node in nodes.into_iter() {
-                        // 多层wildcard必然满足tokens的需求，所以直接添加到values中
+                        // 存在mwc的结果则肯定有匹配值
                         if !node.is_mwc_empty() { return Err(true); }
                         // 符合当前token的node可以是token对应的，也可以是owc对应的
                         next_nodes.extend(node.owc_node());
@@ -156,11 +154,11 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
     }
 
     // 找到key对应的node，返回其可变引用。如果没有对应node存在，则创建
-    fn must_find_node_mut(&mut self, tokens: Vec<Token>) -> (&mut Node<V>, bool) {
+    fn must_find_node_mut(&mut self, tokens: Tokens<'a>) -> (&mut Node<'a, V>, bool) {
         // 是否遇到过了mwc
         let mut hasmwc = false;
         // 找到对应的node
-        let node = tokens.into_iter()
+        let node = tokens.0.into_iter()
             .fold(&mut *self.root,
                 |node, token| {
                     match token {
@@ -177,9 +175,9 @@ impl<V: Default + Clone + Eq + Hash + Display> Trie<V> {
     }
 
     // 找到key对应的node，返回其可变引用。如果没有，则返回None
-    fn find_node_mut(&mut self, tokens: Vec<Token>) -> Option<(&mut Node<V>, bool)> {
+    fn find_node_mut(&mut self, tokens: Tokens<'a>) -> Option<(&mut Node<'a, V>, bool)> {
         let mut hasmwc = false;
-        tokens.into_iter()
+        tokens.0.into_iter()
             // 查找token对应的node，如果没有token就返回None
             .try_fold(&mut *self.root,
                 |node, token| {
